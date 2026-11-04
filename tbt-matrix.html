@@ -51,6 +51,7 @@ main { flex: 1; padding: 18px 20px; min-width: 0; }
 .kpi.green { border-left-color: #27ae60; } .kpi.amber { border-left-color: #f39c12; } .kpi.red { border-left-color: #e74c3c; } .kpi.grey { border-left-color: #95a5a6; }
 .kpi.click { cursor: pointer; } .kpi.click:hover { background: rgba(229,0,125,0.04); }
 .tabs { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; align-items: center; }
+.tabs select + input[type=search] { margin-left: 0; }
 .tabs input[type=search] { margin-left: auto; padding: 5px 10px; border: 1px solid var(--border); border-radius: 5px; font-size: 13px; min-width: 200px; }
 .wo-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .wo-table th { background: var(--bg-header); color: var(--text-on-dark); padding: 8px 10px; text-align: left; font-size: 12px; vertical-align: bottom; }
@@ -116,7 +117,7 @@ a.lnk:hover { background: rgba(229,0,125,0.08); }
         <div class="big">📊</div>
         <p><strong>Upload the TBT Matrix workbook</strong></p>
         <p class="muted">Drag &amp; drop the .xlsx here, or use <em>Upload Excel</em>.<br>
-        Needs a sign-off tab (Name, Depot, a date column per TBT with its <em>TBT Unique Number</em> above)<br>
+        Needs one tab per depot (Name, Job, a date column per TBT with its <em>TBT Unique Number</em> above)<br>
         and a links tab (Depot, Toolbox Talk Link, Toolbox Signoff Sheet Link, TBT Unique Number, Days valid).</p>
         <p class="muted">“NA” in a date cell = not required for that person. Blank = not signed.</p>
       </div>
@@ -130,7 +131,8 @@ a.lnk:hover { background: rgba(229,0,125,0.08); }
         <button class="toggle-btn" data-view="matrix">🧮 Matrix</button>
         <button class="toggle-btn" data-view="report">⚠️ Due soon &amp; expired</button>
         <button class="toggle-btn" data-view="people">👤 By person</button>
-        <input type="search" id="search" placeholder="Search name or TBT…">
+        <select id="jobFilter" class="toggle-btn" style="margin-left:auto" hidden></select>
+        <input type="search" id="search" placeholder="Search name, job or TBT…">
       </div>
       <div id="view"></div>
     </div>
@@ -142,7 +144,7 @@ const PAGE_SRC = '<!DOCTYPE html>\n' + document.documentElement.outerHTML;
 const EMBED = window.__TBT_EMBED || null;
 let DATA = null;          // { source, loadedAt, tbts:{num:{num,title}}, links:[], people:[], warnings:[] }
 let ROWS = [];            // computed per person × TBT
-let VIEW = 'depot', DEPOT = '__all', SEARCH = '';
+let VIEW = 'depot', DEPOT = '__all', JOB = '__all', SEARCH = '';
 const DAY = 864e5;
 const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
@@ -188,7 +190,8 @@ function parseWorkbook(wb, source) {
     if (!parseLinksSheet(ws, rg, out, sn)) parseMatrixSheet(ws, rg, out, personIdx, sn);
   });
   if (!out.links.length) out.warnings.push('No links tab found (expected headers: Depot, Toolbox Talk Link, Toolbox Signoff Sheet Link, TBT Unique Number, Days valid).');
-  if (!out.people.length) out.warnings.push('No sign-off rows found (expected a header row with “Name” and “Depot”).');
+  if (!out.people.length) out.warnings.push('No sign-off rows found (expected a depot tab with a “Name” header row).');
+  out.people.filter(p => !p.job && out.hasJobs).forEach(p => out.warnings.push(`${p.depot}: ${p.name} has no Job selected.`));
   // Titles for TBTs only known from the links tab
   out.links.forEach(l => { if (!out.tbts[l.num]) out.tbts[l.num] = { num: l.num, title: l.tbtText ? l.tbtText.replace(/\.(pdf|docx?|pptx?)$/i, '').replace(/_/g, ' ').trim() : 'TBT ' + l.num }; });
   return out;
@@ -222,19 +225,23 @@ function parseLinksSheet(ws, rg, out, sn) {
 
 function parseMatrixSheet(ws, rg, out, personIdx, sn) {
   for (let r = rg.s.r; r <= rg.e.r; r++) {
-    let nameCol = -1, depotCol = -1;
+    // Header row needs a Name column; Depot column is optional (one-tab-per-depot uses the tab name)
+    let nameCol = -1, depotCol = -1, jobCol = -1;
     for (let c = rg.s.c; c <= rg.e.c; c++) {
       const h = norm(cellText(ws, r, c));
       if (h === 'name' || h === 'names' || h === 'employee' || h === 'employee name') nameCol = c;
       else if (h === 'depot' || h === 'location' || h === 'site') depotCol = c;
+      else if (h === 'job' || h === 'job role' || h === 'role' || h === 'job title') jobCol = c;
     }
-    if (nameCol < 0 || depotCol < 0) continue;
+    if (nameCol < 0) continue;
+    if (jobCol >= 0) out.hasJobs = true;
+    const isHeader = rr => norm(cellText(ws, rr, nameCol)) === 'name';
     // Find the "TBT Unique Number" row above this header
     let numRow = -1;
     for (let rr = r - 1; rr >= Math.max(rg.s.r, r - 5) && numRow < 0; rr--)
       for (let c = rg.s.c; c <= rg.e.c; c++) if (/unique|tbt (no|number)/i.test(cellText(ws, rr, c))) { numRow = rr; break; }
     const cols = [];
-    for (let c = Math.max(nameCol, depotCol) + 1; c <= rg.e.c; c++) {
+    for (let c = Math.max(nameCol, depotCol, jobCol) + 1; c <= rg.e.c; c++) {
       const head = cellText(ws, r, c);
       let num = numRow >= 0 ? tbtKey(cellText(ws, numRow, c)) : '';
       let title = numRow > rg.s.r ? cellText(ws, numRow - 1, c) : '';
@@ -247,12 +254,15 @@ function parseMatrixSheet(ws, rg, out, personIdx, sn) {
     // People rows until the next header row / end
     let rr = r + 1;
     for (; rr <= rg.e.r; rr++) {
-      const name = cellText(ws, rr, nameCol), depot = cellText(ws, rr, depotCol);
-      if (norm(name) === 'name' && norm(depot) === 'depot') break;
+      if (isHeader(rr)) break;
+      const name = cellText(ws, rr, nameCol);
       if (!name) continue;
+      const depot = (depotCol >= 0 ? cellText(ws, rr, depotCol) : '') || sn.trim();
+      const job = jobCol >= 0 ? cellText(ws, rr, jobCol) : '';
       const key = norm(name) + '|' + norm(depot);
       let p = personIdx[key];
-      if (!p) { p = personIdx[key] = { name, depot: depot || '(No depot)', sign: {} }; out.people.push(p); }
+      if (!p) { p = personIdx[key] = { name, depot, job, sign: {} }; out.people.push(p); }
+      else if (job && !p.job) p.job = job;
       cols.forEach(({ c, num }) => {
         const s = parseSign(cell(ws, rr, c));
         if (s.kind === 'bad') out.warnings.push(`${sn}!${XLSX.utils.encode_cell({ r: rr, c })}: “${s.text}” for ${name} is not a date or NA — treated as not signed.`);
@@ -276,7 +286,7 @@ function compute() {
     Object.keys(p.sign).forEach(num => {
       const s = p.sign[num], lk = linkFor(p.depot, num);
       const days = (lk.own && lk.own.days != null) ? lk.own.days : (lk.any && lk.any.days != null ? lk.any.days : 365);
-      const row = { name: p.name, depot: p.depot, num, title: (DATA.tbts[num] || {}).title || ('TBT ' + num), days,
+      const row = { name: p.name, depot: p.depot, job: p.job || '', num, title: (DATA.tbts[num] || {}).title || ('TBT ' + num), days,
         tbtUrl: lk.own && lk.own.tbtUrl, signUrl: lk.own && lk.own.signUrl, signed: null, expires: null, left: null, status: 'na' };
       if (s.kind === 'missing') row.status = 'missing';
       else if (s.kind === 'date') {
@@ -309,9 +319,9 @@ function depots() {
 function matchSearch(r) {
   if (!SEARCH) return true;
   const q = SEARCH;
-  return norm(r.name).includes(q) || norm(r.depot).includes(q) || norm(r.title).includes(q) || ('#' + r.num) === q || r.num === q;
+  return norm(r.name).includes(q) || norm(r.depot).includes(q) || norm(r.job).includes(q) || norm(r.title).includes(q) || ('#' + r.num) === q || r.num === q;
 }
-function visibleRows() { return ROWS.filter(r => (DEPOT === '__all' || r.depot === DEPOT) && matchSearch(r)); }
+function visibleRows() { return ROWS.filter(r => (DEPOT === '__all' || r.depot === DEPOT) && (JOB === '__all' || r.job === JOB) && matchSearch(r)); }
 function tbtNums(rows) {
   const s = new Set(rows.map(r => r.num));
   return [...s].sort((a, b) => (+a - +b) || a.localeCompare(b));
@@ -337,6 +347,10 @@ function render() {
   const w = DATA.warnings;
   $('warnings').hidden = !w.length;
   $('warnings').innerHTML = w.length ? `<strong>Data notes (${w.length})</strong><ul class="warn-list">${w.slice(0, 15).map(x => `<li>${esc(x)}</li>`).join('')}${w.length > 15 ? `<li>…and ${w.length - 15} more</li>` : ''}</ul>` : '';
+  const jobs = [...new Set(DATA.people.map(p => p.job).filter(Boolean))].sort();
+  if (JOB !== '__all' && !jobs.includes(JOB)) JOB = '__all';
+  $('jobFilter').hidden = !jobs.length;
+  $('jobFilter').innerHTML = `<option value="__all">All jobs</option>` + jobs.map(j => `<option ${j === JOB ? 'selected' : ''}>${esc(j)}</option>`).join('');
   renderNav(); renderKpis(); renderView();
 }
 function renderNav() {
@@ -384,7 +398,7 @@ function viewDepot(rows) {
         <div>${linkBtns(f.tbtUrl, f.signUrl)}</div>
         ${bar(tt)}
         <div class="mini"><span><strong>${tt.pct}%</strong> compliant</span><span>✅ ${tt.ok}</span><span>🟠 ${tt.due}</span><span>🔴 ${tt.expired}</span><span>✖ ${tt.missing} not signed</span><span>NA ${tt.na}</span><span>Valid ${f.days}d</span></div>
-        ${issues.length ? `<div style="margin-top:8px;font-size:12px">${issues.map(r => `<div><span class="${ST[r.status].badge}">${ST[r.status].label}</span> ${esc(r.name)} ${r.expires != null ? '· ' + fmtDay(r.expires) + ' · ' + daysText(r) : ''}</div>`).join('')}</div>` : ''}
+        ${issues.length ? `<div style="margin-top:8px;font-size:12px">${issues.map(r => `<div><span class="${ST[r.status].badge}">${ST[r.status].label}</span> ${esc(r.name)}${r.job ? ` <span class="muted">(${esc(r.job)})</span>` : ''} ${r.expires != null ? '· ' + fmtDay(r.expires) + ' · ' + daysText(r) : ''}</div>`).join('')}</div>` : ''}
       </div>`;
     }).join('');
     return `<div class="panel"><h2>🏢 ${esc(dep)} <span class="muted">${new Set(dRows.map(r => r.name)).size} people · ${t.pct}% compliant</span>
@@ -405,7 +419,7 @@ function viewMatrix(rows) {
     const people = groupBy(dRows, r => r.name);
     return linkRow + [...people.keys()].sort().map(name => {
       const pr = people.get(name);
-      return `<tr><td><span class="person-link" data-person="${esc(name)}">${esc(name)}</span></td>${nums.map(n => {
+      return `<tr><td><span class="person-link" data-person="${esc(name)}">${esc(name)}</span>${pr[0].job ? `<div class="muted" style="font-size:11px">${esc(pr[0].job)}</div>` : ''}</td>${nums.map(n => {
         const r = pr.find(x => x.num === n);
         if (!r) return `<td class="cell st-na">—</td>`;
         const inner = r.status === 'na' ? 'NA' : r.status === 'missing' ? '<strong>Not signed</strong>' : `<strong>${fmtDay(r.expires)}</strong><small>signed ${fmtDay(r.signed)}</small><small>${daysText(r)}</small>`;
@@ -417,8 +431,8 @@ function viewMatrix(rows) {
 }
 function reportTable(list, empty) {
   if (!list.length) return `<p class="muted">${empty}</p>`;
-  return `<div class="tbl-wrap"><table class="wo-table"><thead><tr><th>Depot</th><th>Name</th><th>TBT</th><th>Signed</th><th>Expires</th><th>Status</th><th class="no-print">Links</th></tr></thead><tbody>${
-    list.map(r => `<tr class="${ST[r.status].cls}"><td>${esc(r.depot)}</td><td>${esc(r.name)}</td><td><span class="badge-navy">#${esc(r.num)}</span> ${esc(r.title)}</td><td>${fmtDay(r.signed) || '—'}</td><td>${fmtDay(r.expires) || '—'}</td><td><span class="${ST[r.status].badge}">${ST[r.status].label}</span> ${daysText(r)}</td><td class="no-print">${linkBtns(r.tbtUrl, r.signUrl)}</td></tr>`).join('')
+  return `<div class="tbl-wrap"><table class="wo-table"><thead><tr><th>Depot</th><th>Name</th><th>Job</th><th>TBT</th><th>Signed</th><th>Expires</th><th>Status</th><th class="no-print">Links</th></tr></thead><tbody>${
+    list.map(r => `<tr class="${ST[r.status].cls}"><td>${esc(r.depot)}</td><td>${esc(r.name)}</td><td>${esc(r.job)}</td><td><span class="badge-navy">#${esc(r.num)}</span> ${esc(r.title)}</td><td>${fmtDay(r.signed) || '—'}</td><td>${fmtDay(r.expires) || '—'}</td><td><span class="${ST[r.status].badge}">${ST[r.status].label}</span> ${daysText(r)}</td><td class="no-print">${linkBtns(r.tbtUrl, r.signUrl)}</td></tr>`).join('')
   }</tbody></table></div>`;
 }
 function reportLists(rows) {
@@ -439,12 +453,12 @@ function viewReport(rows) {
 function viewPeople(rows) {
   const people = groupBy(rows, r => r.depot + '\u0000' + r.name);
   const keys = [...people.keys()].sort();
-  $('view').innerHTML = `<div class="panel"><div class="tbl-wrap"><table class="wo-table"><thead><tr><th>Depot</th><th>Name</th><th>Overall</th><th>Required</th><th>In date</th><th>Due soon</th><th>Expired</th><th>Not signed</th><th>Toolbox talks</th></tr></thead><tbody>${
+  $('view').innerHTML = `<div class="panel"><div class="tbl-wrap"><table class="wo-table"><thead><tr><th>Depot</th><th>Name</th><th>Job</th><th>Overall</th><th>Required</th><th>In date</th><th>Due soon</th><th>Expired</th><th>Not signed</th><th>Toolbox talks</th></tr></thead><tbody>${
     keys.map(k => {
       const pr = people.get(k), t = tally(pr), [dep, name] = k.split('\u0000');
       const overall = t.expired + t.missing ? 'expired' : t.due ? 'due' : t.req ? 'ok' : 'na';
       const lbl = { expired: 'Action required', due: 'Due soon', ok: 'All in date', na: 'Nothing required' }[overall];
-      return `<tr class="${ST[overall].cls}"><td>${esc(dep)}</td><td><span class="person-link" data-person="${esc(name)}">${esc(name)}</span></td><td><span class="${ST[overall].badge}">${lbl}</span></td><td>${t.req}</td><td>${t.ok}</td><td>${t.due}</td><td>${t.expired}</td><td>${t.missing}</td>
+      return `<tr class="${ST[overall].cls}"><td>${esc(dep)}</td><td><span class="person-link" data-person="${esc(name)}">${esc(name)}</span></td><td>${esc(pr[0].job)}</td><td><span class="${ST[overall].badge}">${lbl}</span></td><td>${t.req}</td><td>${t.ok}</td><td>${t.due}</td><td>${t.expired}</td><td>${t.missing}</td>
         <td style="font-size:12px">${pr.sort((a, b) => +a.num - +b.num).map(r => `<div><span class="${ST[r.status].badge}">#${esc(r.num)}</span> ${esc(r.title)} — ${ST[r.status].label}${r.expires != null ? ' (exp ' + fmtDay(r.expires) + ')' : ''}</div>`).join('')}</td></tr>`;
     }).join('')
   }</tbody></table></div></div>`;
@@ -453,7 +467,7 @@ function viewPeople(rows) {
 /* ===== §7 Exports ===== */
 function exportXlsx() {
   const rows = visibleRows(), L = reportLists(rows), wb = XLSX.utils.book_new();
-  const toRec = r => ({ Depot: r.depot, Name: r.name, 'TBT #': isNaN(+r.num) ? r.num : +r.num, 'Toolbox Talk': r.title, Signed: fmtDay(r.signed), Expires: fmtDay(r.expires),
+  const toRec = r => ({ Depot: r.depot, Name: r.name, Job: r.job, 'TBT #': isNaN(+r.num) ? r.num : +r.num, 'Toolbox Talk': r.title, Signed: fmtDay(r.signed), Expires: fmtDay(r.expires),
     'Days left': r.left, Status: ST[r.status].label, 'Toolbox Talk Link': r.tbtUrl || '', 'Sign-off Link': r.signUrl || '' });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(L.expired.map(toRec).concat(L.due.map(toRec))), 'Due soon & expired');
   const dep = depots().filter(d => DEPOT === '__all' || d === DEPOT).map(d => {
@@ -505,6 +519,7 @@ $('dueDays').oninput = () => DATA && render();
 $('search').oninput = e => { SEARCH = norm(e.target.value); if (DATA) { renderKpis(); renderView(); } };
 $('exportXlsx').onclick = () => { if (typeof XLSX === 'undefined') return alert('Excel export needs an internet connection.'); exportXlsx(); };
 $('exportHtml').onclick = exportHtml;
+$('jobFilter').onchange = e => { JOB = e.target.value; renderKpis(); renderView(); };
 document.addEventListener('click', e => {
   const nav = e.target.closest('.nav-item'); if (nav) { DEPOT = nav.dataset.depot; renderNav(); renderKpis(); renderView(); return; }
   const tab = e.target.closest('.tabs .toggle-btn'); if (tab) { VIEW = tab.dataset.view; renderView(); return; }
