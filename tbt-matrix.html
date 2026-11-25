@@ -118,7 +118,7 @@ a.lnk:hover { background: rgba(229,0,125,0.08); }
         <p><strong>Upload the TBT Matrix workbook</strong></p>
         <p class="muted">Drag &amp; drop the .xlsx here, or use <em>Upload Excel</em>.<br>
         Needs one tab per depot (Name, Job, a date column per TBT with its <em>TBT Unique Number</em> above)<br>
-        and a links tab (Depot, Toolbox Talk Link, Toolbox Signoff Sheet Link, TBT Unique Number, Days valid).</p>
+        a <em>Toolbox Talks</em> tab (one link per talk) and a <em>Sign-off Sheets</em> tab (link per depot &amp; talk).</p>
         <p class="muted">“NA” in a date cell = not required for that person. Blank = not signed.</p>
       </div>
     </div>
@@ -189,10 +189,12 @@ function parseWorkbook(wb, source) {
     const rg = XLSX.utils.decode_range(ws['!ref']);
     if (!parseLinksSheet(ws, rg, out, sn)) parseMatrixSheet(ws, rg, out, personIdx, sn);
   });
-  if (!out.links.length) out.warnings.push('No links tab found (expected headers: Depot, Toolbox Talk Link, Toolbox Signoff Sheet Link, TBT Unique Number, Days valid).');
+  if (!out.links.length) out.warnings.push('No links tabs found (expected a Toolbox Talks tab: TBT Unique Number, Toolbox Talk Link, Days valid; and a Sign-off Sheets tab: Depot, TBT Unique Number, Sign-off Sheet Link).');
   if (!out.people.length) out.warnings.push('No sign-off rows found (expected a depot tab with a “Name” header row).');
   out.people.filter(p => !p.job && out.hasJobs).forEach(p => out.warnings.push(`${p.depot}: ${p.name} has no Job selected.`));
   // Titles for TBTs only known from the links tab
+  // A title typed on the Toolbox Talks tab wins over the depot tab headings
+  out.links.forEach(l => { if (l.title) out.tbts[l.num] = { num: l.num, title: l.title }; });
   out.links.forEach(l => { if (!out.tbts[l.num]) out.tbts[l.num] = { num: l.num, title: l.tbtText ? l.tbtText.replace(/\.(pdf|docx?|pptx?)$/i, '').replace(/_/g, ' ').trim() : 'TBT ' + l.num }; });
   return out;
 }
@@ -207,6 +209,7 @@ function parseLinksSheet(ws, rg, out, sn) {
       else if (/unique|^tbt (no|number|#)/.test(h) && map.num == null) map.num = c;
       else if (/days|valid/.test(h) && map.days == null) map.days = c;
       else if (/^depot/.test(h) && map.depot == null) map.depot = c;
+      else if (/title|talk name/.test(h) && map.title == null) map.title = c;
     }
     if (map.num == null || (map.tbt == null && map.sign == null)) continue;
     for (let rr = r + 1; rr <= rg.e.r; rr++) {
@@ -215,7 +218,8 @@ function parseLinksSheet(ws, rg, out, sn) {
       const t = map.tbt != null ? cellLink(ws, rr, map.tbt) : null;
       const s = map.sign != null ? cellLink(ws, rr, map.sign) : null;
       const dv = map.days != null ? parseFloat(cellText(ws, rr, map.days)) : NaN;
-      out.links.push({ depot, num, tbtUrl: t && t.url, tbtText: t ? t.text : (map.tbt != null ? cellText(ws, rr, map.tbt) : ''),
+      const title = map.title != null ? cellText(ws, rr, map.title) : '';
+      out.links.push({ depot, num, title, tbtUrl: t && t.url, tbtText: t ? t.text : (map.tbt != null ? cellText(ws, rr, map.tbt) : ''),
         signUrl: s && s.url, signText: s ? s.text : '', days: isNaN(dv) ? null : dv });
     }
     return true;
@@ -274,10 +278,14 @@ function parseMatrixSheet(ws, rg, out, personIdx, sn) {
 }
 
 /* ===== §4 Status computation ===== */
+/* Rows for this depot win; rows with no depot (Toolbox Talks tab) apply to every depot.
+   Days valid falls back to any row for the talk, then 365. */
 function linkFor(depot, num) {
   const L = DATA.links.filter(l => l.num === num);
-  const own = L.find(l => norm(l.depot) === norm(depot));
-  return { own: own || null, any: L.find(l => l.days != null) || L[0] || null };
+  const own = L.filter(l => l.depot && norm(l.depot) === norm(depot)), all = L.filter(l => !l.depot);
+  const pick = (rows, k) => { const r = rows.find(x => x[k] != null && x[k] !== ''); return r ? r[k] : null; };
+  const get = k => pick(own, k) ?? pick(all, k);
+  return { tbtUrl: get('tbtUrl'), signUrl: get('signUrl'), days: get('days') ?? pick(L, 'days') ?? 365 };
 }
 function compute() {
   const today = asOf(), soon = dueDays();
@@ -285,9 +293,9 @@ function compute() {
   DATA.people.forEach(p => {
     Object.keys(p.sign).forEach(num => {
       const s = p.sign[num], lk = linkFor(p.depot, num);
-      const days = (lk.own && lk.own.days != null) ? lk.own.days : (lk.any && lk.any.days != null ? lk.any.days : 365);
+      const days = lk.days;
       const row = { name: p.name, depot: p.depot, job: p.job || '', num, title: (DATA.tbts[num] || {}).title || ('TBT ' + num), days,
-        tbtUrl: lk.own && lk.own.tbtUrl, signUrl: lk.own && lk.own.signUrl, signed: null, expires: null, left: null, status: 'na' };
+        tbtUrl: lk.tbtUrl, signUrl: lk.signUrl, signed: null, expires: null, left: null, status: 'na' };
       if (s.kind === 'missing') row.status = 'missing';
       else if (s.kind === 'date') {
         row.signed = s.day; row.expires = s.day + days; row.left = row.expires - today;
@@ -416,7 +424,7 @@ function viewMatrix(rows) {
   const head = `<tr><th>Name</th>${nums.map(n => `<th style="text-align:center;min-width:130px"><span class="badge-navy" style="background:var(--accent)">#${esc(n)}</span><br>${esc((DATA.tbts[n] || {}).title || '')}</th>`).join('')}</tr>`;
   const body = [...byDepot.keys()].sort().map(dep => {
     const dRows = byDepot.get(dep);
-    const linkRow = `<tr class="depot-head"><td>🏢 ${esc(dep)}</td>${nums.map(n => { const lk = linkFor(dep, n).own; return `<td class="cell">${linkBtns(lk && lk.tbtUrl, lk && lk.signUrl)}</td>`; }).join('')}</tr>`;
+    const linkRow = `<tr class="depot-head"><td>🏢 ${esc(dep)}</td>${nums.map(n => { const lk = linkFor(dep, n); return `<td class="cell">${linkBtns(lk.tbtUrl, lk.signUrl)}</td>`; }).join('')}</tr>`;
     const people = groupBy(dRows, r => r.name);
     return linkRow + [...people.keys()].sort().map(name => {
       const pr = people.get(name);
