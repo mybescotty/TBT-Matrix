@@ -75,7 +75,7 @@ a.lnk:hover { background: rgba(229,0,125,0.08); }
 .tbt-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
 .tbt-card { border: 1px solid var(--border); border-radius: 8px; padding: 12px; }
 .tbt-card .t { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
-.bar { display: flex; height: 8px; border-radius: 4px; overflow: hidden; background: #eee; margin: 8px 0 6px; }
+.bar { display: flex; height: 10px; border-radius: 5px; overflow: hidden; background: #e4e4ec; margin: 8px 0 6px; }
 .bar span { display: block; height: 100%; }
 .mini { font-size: 11px; color: var(--text-secondary); display: flex; gap: 10px; flex-wrap: wrap; }
 .empty { text-align: center; padding: 60px 20px; color: var(--text-secondary); }
@@ -380,10 +380,11 @@ function renderView() {
 
 /* ===== §6 Views ===== */
 function groupBy(rows, key) { const m = new Map(); rows.forEach(r => { const k = key(r); if (!m.has(k)) m.set(k, []); m.get(k).push(r); }); return m; }
+// Progress bar: fills to the compliance % (in date green, due soon amber); the empty track is expired / not signed
 function bar(t) {
-  if (!t.req) return '<div class="bar"></div>';
+  if (!t.req) return '<div class="bar" title="Nothing required"></div>';
   const seg = (n, col) => n ? `<span style="width:${n / t.req * 100}%;background:${col}"></span>` : '';
-  return `<div class="bar">${seg(t.ok, '#27ae60')}${seg(t.due, '#f39c12')}${seg(t.expired, '#e74c3c')}${seg(t.missing, '#922b21')}</div>`;
+  return `<div class="bar" title="${t.pct}% compliant · ${t.expired + t.missing} expired / not signed">${seg(t.ok, '#27ae60')}${seg(t.due, '#f39c12')}</div>`;
 }
 function viewDepot(rows) {
   const byDepot = groupBy(rows, r => r.depot);
