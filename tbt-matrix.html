@@ -192,6 +192,10 @@ function parseWorkbook(wb, source) {
   if (!out.links.length) out.warnings.push('No links tabs found (expected a Toolbox Talks tab: TBT Unique Number, Toolbox Talk Link, Days valid; and a Sign-off Sheets tab: Depot, TBT Unique Number, Sign-off Sheet Link).');
   if (!out.people.length) out.warnings.push('No sign-off rows found (expected a depot tab with a “Name” header row).');
   out.people.filter(p => !p.job && out.hasJobs).forEach(p => out.warnings.push(`${p.depot}: ${p.name} has no Job selected.`));
+  // Depot names on the links tabs must match a depot tab, or their links are never used
+  const tabDepots = new Set(out.people.map(p => norm(p.depot)));
+  [...new Set(out.links.filter(l => l.depot && !tabDepots.has(norm(l.depot))).map(l => l.depot))].forEach(d =>
+    out.warnings.push(`Sign-off Sheets lists depot “${d}”, but no depot tab has that name — check the spelling (its links are not being used).`));
   // Titles for TBTs only known from the links tab
   // A title typed on the Toolbox Talks tab wins over the depot tab headings
   out.links.forEach(l => { if (l.title) out.tbts[l.num] = { num: l.num, title: l.title }; });
@@ -320,8 +324,7 @@ function tally(rows) {
   return t;
 }
 function depots() {
-  const set = new Set(DATA.people.map(p => p.depot));
-  DATA.links.forEach(l => l.depot && set.add(l.depot));
+  const set = new Set(DATA.people.map(p => p.depot));  // depot tabs only; stray link-tab names are reported in Data notes
   return [...set].sort((a, b) => a.localeCompare(b));
 }
 function matchSearch(r) {
